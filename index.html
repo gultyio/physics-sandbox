@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shape Physics - The Final Lab</title>
+    <style>
+        body {
+            margin: 0; background-color: black; overflow: hidden;
+            display: flex; justify-content: center; align-items: center;
+            height: 100vh; color: white; font-family: 'Consolas', monospace;
+            user-select: none;
+        }
+
+        #toggle-ui {
+            position: absolute; top: 10px; right: 10px; z-index: 100;
+            background: #222; color: white; border: 1px solid #444; padding: 5px 12px;
+            cursor: pointer; border-radius: 4px; font-size: 12px;
+        }
+
+        #ui-container {
+            position: absolute; top: 50px; right: 10px;
+            display: flex; flex-direction: column; gap: 10px; z-index: 99;
+        }
+
+        .panel {
+            background: rgba(15, 15, 15, 0.95); padding: 12px;
+            border: 1px solid #333; border-radius: 6px; width: 250px;
+        }
+
+        h3 { margin: 0 0 10px 0; font-size: 11px; text-transform: uppercase; color: #888; border-bottom: 1px solid #222; }
+        .group { margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; font-size: 11px; }
+        
+        input[type="number"], select, input[type="text"] { 
+            background: #000; border: 1px solid #444; color: #fff; padding: 2px; font-size: 11px; width: 70px;
+        }
+
+        #event-log {
+            position: absolute; bottom: 20px; left: 20px; width: 420px; height: 160px;
+            background: rgba(0,0,0,0.6); font-size: 12px; color: #0f0;
+            overflow-y: auto; pointer-events: auto; padding: 10px;
+            border: 1px solid #222; display: flex; flex-direction: column;
+            scrollbar-width: thin; scrollbar-color: #444 #000;
+        }
+
+        #event-log::-webkit-scrollbar { width: 6px; }
+        #event-log::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
+
+        canvas { border: 1px solid #444; background: #000; }
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+<button id="toggle-ui">Open/Close Config</button>
+
+<div id="ui-container">
+    <div class="panel">
+        <h3>Map Selection</h3>
+        <select id="mapSelect">
+            <option value="box">Standard Box</option>
+            <option value="solar">Solar System</option>
+        </select>
+    </div>
+
+    <div id="box-config" class="panel">
+        <h3>Box Physics</h3>
+        <div class="group"><label>Shatter Walls</label><input type="checkbox" id="shatterActive" checked></div>
+        <div class="group"><label>Merge Shapes</label><input type="checkbox" id="mergeActive" checked></div>
+        <div class="group"><label>Box Width</label><input type="number" id="boxW" value="800"></div>
+        <div class="group"><label>Box Height</label><input type="number" id="boxH" value="550"></div>
+    </div>
+
+    <div id="solar-config" class="panel hidden">
+        <h3>Solar Settings</h3>
+        <div class="group"><label>Sun Shape</label>
+            <select id="sunShape"><option value="circle">Circle</option><option value="square">Square</option></select>
+        </div>
+        <div class="group"><label>Sun Mass</label><input type="number" id="sunMass" value="1000"></div>
+    </div>
+
+    <div class="panel">
+        <h3>Spawner</h3>
+        <div class="group"><label>Name</label><input type="text" id="customName" placeholder="Auto ID"></div>
+        <div class="group">
+            <label>Type</label>
+            <select id="spawnType">
+                <option value="square">Rectangle</option>
+                <option value="circle">Circle</option>
+                <option value="bullet">Shatter Bullet</option>
+                <option value="asteroid">Asteroid</option>
+            </select>
+        </div>
+        <div class="group"><label>Randomize</label><input type="checkbox" id="isRandom"></div>
+        <div class="group"><label>Spawn Width</label><input type="number" id="spawnW" value="40"></div>
+        <div class="group"><label>Spawn Height</label><input type="number" id="spawnH" value="40"></div>
+    </div>
+</div>
+
+<div id="event-log"></div>
+
+<canvas id="canvas"></canvas>
+
+<script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const logEl = document.getElementById('event-log');
+
+    const mapSelect = document.getElementById('mapSelect');
+    const boxConfig = document.getElementById('box-config');
+    const solarConfig = document.getElementById('solar-config');
+    
+    let entities = [];
+    let sun = null;
+    let globalId = 1;
+    const G = 0.5;
+
+    function logEvent(msg) {
+        const div = document.createElement('div');
+        div.style.marginBottom = "4px";
+        div.textContent = `[${new Date().toLocaleTimeString([], {hour12: false, hour: '2-digit', minute:'2-digit', second:'2-digit'})}] ${msg}`;
+        logEl.appendChild(div);
+        logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    document.getElementById('toggle-ui').onclick = () => document.getElementById('ui-container').classList.toggle('hidden');
+    
+    mapSelect.onchange = () => {
+        boxConfig.classList.toggle('hidden', mapSelect.value === 'solar');
+        solarConfig.classList.toggle('hidden', mapSelect.value !== 'solar');
+        init();
+    };
+
+    function init() {
+        let w = Math.min(parseInt(document.getElementById('boxW').value), window.innerWidth - 40);
+        let h = Math.min(parseInt(document.getElementById('boxH').value), window.innerHeight - 40);
+        canvas.width = w; canvas.height = h;
+        entities = [];
+        if (mapSelect.value === 'solar') {
+            sun = { x: canvas.width/2, y: canvas.height/2, w: 60, h: 60, mass: parseInt(document.getElementById('sunMass').value), shape: document.getElementById('sunShape').value, name: "The Sun" };
+        } else { sun = null; }
+    }
+
+    class Entity {
+        constructor(x, y, w, h, vx, vy, shape, type, name = null) {
+            this.id = globalId++;
+            this.x = x; this.y = y; this.w = Math.max(2, w); this.h = Math.max(2, h);
+            this.vx = vx; this.vy = vy; this.shape = shape; this.type = type;
+            this.name = name || `${shape.charAt(0).toUpperCase() + shape.slice(1)}#${this.id}`;
+            this.rotation = 0; this.spin = (Math.random()-0.5)*0.15;
+            this.dead = false; this.cooldown = 60; 
+            logEvent(`${this.name} has spawned`);
+        }
+
+        update() {
+            if (this.cooldown > 0) this.cooldown--;
+            this.rotation += this.spin;
+
+            // Solar Physics
+            if (sun && this.type !== 'bullet') {
+                const dx = sun.x - this.x; const dy = sun.y - this.y;
+                const d2 = dx*dx + dy*dy || 1;
+                const dist = Math.sqrt(d2);
+                this.vx += (dx/dist) * (G * sun.mass / d2);
+                this.vy += (dy/dist) * (G * sun.mass / d2);
+
+                if (dist < (sun.w/2 + this.w/2)) {
+                    if (this.shape !== sun.shape) {
+                        logEvent(`${this.name} was shattered and obstructed by Gravity`);
+                        sun.mass += this.w * 0.1; this.dead = true;
+                    } else { 
+                        this.vx *= -0.7; this.vy *= -0.7; 
+                        this.x -= (dx/dist)*8; this.y -= (dy/dist)*8; 
+                    }
+                }
+            }
+
+            this.x += this.vx; this.y += this.vy;
+            const r = Math.max(this.w, this.h)/2;
+            
+            // Wall Bounds & Shatter
+            if (this.x - r < 0 || this.x + r > canvas.width || this.y - r < 0 || this.y + r > canvas.height) {
+                if (this.x - r < 0 || this.x + r > canvas.width) this.vx *= -1;
+                if (this.y - r < 0 || this.y + r > canvas.height) this.vy *= -1;
+                
+                if (this.type === 'normal' && document.getElementById('shatterActive').checked && mapSelect.value === 'box') {
+                    if (this.w < 15 || this.h < 15) {
+                        logEvent(`${this.name} was shattered and obstructed by Gravity`);
+                        this.dead = true;
+                    } else {
+                        this.shatter();
+                    }
+                }
+            }
+        }
+
+        shatter() {
+            if (this.dead) return;
+            logEvent(`${this.name} has shattered`);
+            this.dead = true;
+            for (let i = 0; i < 2; i++) {
+                const ratio = 0.6 + Math.random()*0.8;
+                const side = (i === 0) ? 1 : -1;
+                
+                // Spawn fragments apart with a "kick" to prevent instant merge
+                const offX = (this.w * 0.45) * side;
+                const offY = (this.h * 0.45) * -side;
+
+                entities.push(new Entity(
+                    this.x + offX, 
+                    this.y + offY, 
+                    this.w*0.5*ratio, 
+                    this.h*0.5*(2-ratio), 
+                    this.vx + (Math.random()*6 * side), 
+                    this.vy + (Math.random()*6 * -side), 
+                    this.shape, 
+                    'normal'
+                ));
+            }
+        }
+
+        draw() {
+            ctx.save(); ctx.translate(this.x, this.y); ctx.rotate(this.rotation);
+            ctx.strokeStyle = this.type === 'bullet' ? '#0ff' : (this.type === 'asteroid' ? '#f60' : 'white');
+            ctx.lineWidth = 1;
+            if (this.shape === 'circle') { ctx.beginPath(); ctx.arc(0, 0, this.w/2, 0, Math.PI*2); ctx.stroke(); }
+            else { ctx.strokeRect(-this.w/2, -this.h/2, this.w, this.h); }
+            ctx.restore();
+        }
+    }
+
+    function checkCollisions() {
+        for (let i = 0; i < entities.length; i++) {
+            for (let j = i + 1; j < entities.length; j++) {
+                let a = entities[i], b = entities[j];
+                if (a.dead || b.dead) continue;
+                const dx = a.x - b.x; const dy = a.y - b.y;
+                const d = Math.sqrt(dx*dx + dy*dy);
+                const combined = (Math.max(a.w,a.h) + Math.max(b.w,b.h))/2;
+
+                if (d < combined) {
+                    // Shatter Bullet Logic
+                    if (a.type === 'bullet' || b.type === 'bullet') {
+                        const bul = a.type === 'bullet' ? a : b, tar = a.type === 'bullet' ? b : a;
+                        if (tar.type === 'normal') { 
+                            logEvent(`${bul.name} exploded and struck ${tar.name}`); 
+                            tar.shatter(); bul.dead = true; 
+                        }
+                    } 
+                    // Asteroid Logic
+                    else if (a.type === 'asteroid' || b.type === 'asteroid') {
+                        const ast = a.type === 'asteroid' ? a : b, tar = a.type === 'asteroid' ? b : a;
+                        if (ast.shape === tar.shape) { 
+                            logEvent(`${tar.name} absorbed ${ast.name}`); 
+                            tar.w += 5; tar.h += 5; 
+                        } else { 
+                            logEvent(`${ast.name} destabilized ${tar.name}`); 
+                            tar.vx += ast.vx*0.5; tar.vy += ast.vy*0.5;
+                        }
+                        ast.dead = true;
+                    } 
+                    // Normal Merge Logic
+                    else if (a.shape === b.shape && document.getElementById('mergeActive').checked && a.cooldown === 0 && b.cooldown === 0) {
+                        logEvent(`${a.name} merged with ${b.name}`);
+                        a.dead = b.dead = true;
+                        const newW = (a.w + b.w) * 0.6;
+                        const newH = (a.h + b.h) * 0.6;
+                        entities.push(new Entity((a.x+b.x)/2, (a.y+b.y)/2, newW, newH, (a.vx+b.vx)*0.5, (a.vy+b.vy)*0.5, a.shape, 'normal'));
+                    }
+                }
+            }
+        }
+    }
+
+    function animate() {
+        ctx.fillStyle = 'black'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        if (sun) {
+            ctx.strokeStyle = '#FFD700'; ctx.lineWidth = 2;
+            if (sun.shape === 'circle') { ctx.beginPath(); ctx.arc(sun.x, sun.y, sun.w/2, 0, Math.PI*2); ctx.stroke(); }
+            else { ctx.strokeRect(sun.x-sun.w/2, sun.y-sun.h/2, sun.w, sun.h); }
+        }
+
+        checkCollisions();
+        entities = entities.filter(e => !e.dead);
+        entities.forEach(e => { e.update(); e.draw(); });
+        requestAnimationFrame(animate);
+    }
+
+    canvas.onmousedown = (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left, y = e.clientY - rect.top;
+        const sType = document.getElementById('spawnType').value;
+        const isRand = document.getElementById('isRandom').checked;
+        let sW = parseInt(document.getElementById('spawnW').value);
+        let sH = parseInt(document.getElementById('spawnH').value);
+        
+        if (isRand) {
+            sW = sW * (0.4 + Math.random() * 1.2);
+            sH = sH * (0.4 + Math.random() * 1.2);
+        }
+
+        const nameInput = document.getElementById('customName').value;
+        const name = nameInput.trim() !== "" ? nameInput : null;
+        
+        let vx = (Math.random()-0.5)*10, vy = (Math.random()-0.5)*10;
+        let shape = sType === 'asteroid' ? (Math.random()>0.5?'circle':'square') : (sType === 'bullet' ? 'square' : sType);
+        let type = sType === 'bullet' ? 'bullet' : (sType === 'asteroid' ? 'asteroid' : 'normal');
+
+        // Auto-Orbit Logic for Solar Mode
+        if (mapSelect.value === 'solar' && type !== 'bullet') {
+            const dx = x - sun.x, dy = y - sun.y, d = Math.sqrt(dx*dx+dy*dy);
+            const speed = Math.sqrt(G * sun.mass / d);
+            vx = -dy/d * speed; vy = dx/d * speed;
+        }
+
+        entities.push(new Entity(x, y, sW, sH, vx, vy, shape, type, name));
+        document.getElementById('customName').value = ""; // Reset name input
+    };
+
+    init(); animate();
+</script>
+</body>
+</html>
